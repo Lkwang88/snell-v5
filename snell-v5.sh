@@ -2,7 +2,19 @@
 # Snell v5 manager. Official server binary; no containers. MIT.
 set -eu
 VERSION=5.0.1
-OFFICIAL_SHA256=5b2e221f2c6e29b1db8e47053e1221be29d5627da807cb932b089f514a3609f0
+ASSET_ARCH=
+OFFICIAL_SHA256=
+select_arch() {
+    case "$1" in
+        x86_64|amd64)
+            ASSET_ARCH=amd64
+            OFFICIAL_SHA256=5b2e221f2c6e29b1db8e47053e1221be29d5627da807cb932b089f514a3609f0;;
+        aarch64|arm64)
+            ASSET_ARCH=aarch64
+            OFFICIAL_SHA256=c9e1cc1f1a86e7d2958f2bc41ff9dc668edf479455a651ea05c6db2c18cd2e4e;;
+        *) die "不支持的 CPU 架构：$1；支持 amd64/x86_64 和 arm64/aarch64。";;
+    esac
+}
 BASE=/usr/local/lib/snell-v5
 CONF=/etc/snell-v5/server.conf
 META=/etc/snell-v5/client.conf
@@ -25,7 +37,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 platform() {
-    [ "$(uname -m)" = x86_64 ] || die '当前版本仅验证并支持 x86_64/amd64。'
+    select_arch "$(uname -m)"
     if [ -f /etc/alpine-release ] && command -v rc-service >/dev/null 2>&1; then
         MANAGER=openrc
     elif command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
@@ -108,7 +120,7 @@ wait_healthy() {
 prepare_binary() {
     WORK=$(mktemp -d /var/tmp/snell-v5.XXXXXXXX)
     chmod 700 "$WORK"
-    url="https://dl.nssurge.com/snell/snell-server-v$VERSION-linux-amd64.zip"
+    url="https://dl.nssurge.com/snell/snell-server-v$VERSION-linux-$ASSET_ARCH.zip"
     curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 120 --retry 2 "$url" -o "$WORK/server.zip"
     unzip -q "$WORK/server.zip" snell-server -d "$WORK"
     actual=$(sha256sum "$WORK/snell-server"); actual=${actual%% *}
@@ -344,7 +356,7 @@ uninstall_cmd() {
 }
 help_cmd() {
     cat <<'HELP'
-Snell v5 专用管理器（amd64）
+Snell v5 专用管理器（amd64 / arm64）
 用法：sh snell-v5.sh [install|start|stop|restart|status|logs|export|update|uninstall|help]
 无参数打开菜单；安装后可直接运行 snell-v5。
 install 支持 SNELL_PORT=内部端口 SNELL_HOST=公网地址 SNELL_PUBLIC_PORT=公网端口。

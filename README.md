@@ -1,7 +1,7 @@
 # Snell v5 — 自用原生安装管理脚本
 
 固定使用 **Surge 官方 Snell v5.0.1**，不安装 Docker，不升级 v6。
-主要面向 **Alpine/OpenRC 的 amd64 LXC 小机**，内置经真机验证的 UPX 解壳兼容处理。
+主要面向 **Alpine/OpenRC 的 amd64 / arm64 LXC 小机**，内置经真机验证的 UPX 解壳兼容处理。
 
 ## 快速开始
 
@@ -41,7 +41,7 @@ SNELL_PORT=30005 SNELL_HOST=192.0.2.10 SNELL_PUBLIC_PORT=20005 sh snell-v5.sh in
 
 ## 取舍和安全边界
 
-- **仅 amd64/x86_64**。不宣称支持 ARM。
+- 支持 **amd64/x86_64 和 arm64/aarch64**，自动选择官方下载包、分别校验固定 SHA-256；不支持 armv7/i386 等其他架构。
 - **Alpine 3.21/OpenRC 已真机安装和代理转发验证**；Debian/Ubuntu systemd 路径已实现，但尚未真机端到端验证。
 - 官方压缩包经 HTTPS 下载，解压后的原始二进制与脚本固定 SHA-256 比对，再在 Alpine 上执行 `upx -t` / `upx -d`。不是第三方重编译内核。
 - 固定哈希是维护者对官方 HTTPS 文件的实测记录，**不是 Surge 官方签名或官方公布的校验值**。上游文件若变化，脚本拒绝安装，不自动信任新哈希。
@@ -87,7 +87,7 @@ python3 test_script.py
 shellcheck -s sh snell-v5.sh
 ```
 
-已完成：7 项离线回归（输入校验、TCP/UDP 端口冲突、端口 PID 归属、哈希失败中止、更新失败回滚等）；两台 Alpine 3.21 amd64 LXC 全新部署、重启、开机自启注册；外部 Snell v5 客户端经 SOCKS 发起 HTTPS 请求返回 200，错误 PSK 负面对照失败。
+已完成：8 项离线回归（架构映射、输入校验、TCP/UDP 端口冲突、端口 PID 归属、哈希失败中止、更新失败回滚等）；两台 Alpine 3.21 amd64 和一台 arm64 LXC 全新部署、重启、开机自启注册；外部 Snell v5 客户端经 SOCKS 发起 HTTPS 请求返回 200，错误 PSK 负面对照失败。
 
 另在临时实例上测试启停、同版本更新和备份卸载。未重启 VPS 验证系统启动流程；未验证 UDP/QUIC、所有客户端软件与用户本地线路。临时测试客户端为 [winmin/snell-client](https://github.com/winmin/snell-client)，其为第三方逆向实现，测试成功不等于官方客户端认证。
 
@@ -97,6 +97,7 @@ Snell 是 Surge 团队的协议；本仓库仅提供独立编写的安装管理�
 
 - [Snell 官方发布说明](https://kb.nssurge.com/surge-knowledge-base/release-notes/snell)
 - [官方 v5.0.1 amd64 下载](https://dl.nssurge.com/snell/snell-server-v5.0.1-linux-amd64.zip)
+- [官方 v5.0.1 arm64 下载](https://dl.nssurge.com/snell/snell-server-v5.0.1-linux-aarch64.zip)
 - [UPX](https://github.com/upx/upx)
 
 MIT 许可证仅适用于本仓库代码；Snell 和 UPX 分别遵守其自身许可。

@@ -11,6 +11,16 @@ class ScriptTests(unittest.TestCase):
     def test_syntax(self):
         subprocess.run(['sh', '-n', str(pathlib.Path(__file__).with_name('snell-v5.sh'))], check=True)
 
+    def test_arch_mapping(self):
+        for arch, asset in [('x86_64','amd64'),('amd64','amd64'),('aarch64','aarch64'),('arm64','aarch64')]:
+            r=self.run_sh(f'select_arch {arch}; printf "%s %s" "$ASSET_ARCH" "$OFFICIAL_SHA256"')
+            self.assertEqual(r.returncode,0)
+            selected, digest=r.stdout.split()
+            self.assertEqual(selected,asset)
+            self.assertEqual(len(digest),64)
+        for arch in ('armv7l','i686','riscv64'):
+            self.assertNotEqual(self.run_sh(f'select_arch {arch}').returncode,0)
+
     def test_ports(self):
         for port in ('1024', '20005', '60005', '65535'):
             self.assertEqual(self.run_sh(f'valid_port {port}').returncode, 0)
@@ -41,6 +51,7 @@ class ScriptTests(unittest.TestCase):
     def test_hash_failure_stops_before_execution(self):
         r=self.run_sh('''
 MANAGER=systemd
+select_arch x86_64
 curl() { :; }
 unzip() { printf fake > "$WORK/snell-server"; }
 prepare_binary
