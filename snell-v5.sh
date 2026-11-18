@@ -1,18 +1,38 @@
 #!/bin/sh
-# Snell v5 manager. Official server binary; no containers. MIT.
+# Snell v5/v6 manager. Official server binaries; no containers. MIT.
 set -eu
-VERSION=5.0.1
+SCRIPT_VERSION=2.0.0
+VERSION=
+MAJOR=
 ASSET_ARCH=
 OFFICIAL_SHA256=
 select_arch() {
     case "$1" in
-        x86_64|amd64)
-            ASSET_ARCH=amd64
-            OFFICIAL_SHA256=5b2e221f2c6e29b1db8e47053e1221be29d5627da807cb932b089f514a3609f0;;
-        aarch64|arm64)
-            ASSET_ARCH=aarch64
-            OFFICIAL_SHA256=c9e1cc1f1a86e7d2958f2bc41ff9dc668edf479455a651ea05c6db2c18cd2e4e;;
+        x86_64|amd64) ASSET_ARCH=amd64;;
+        aarch64|arm64) ASSET_ARCH=aarch64;;
         *) die "不支持的 CPU 架构：$1；支持 amd64/x86_64 和 arm64/aarch64。";;
+    esac
+}
+select_release() {
+    case "$1" in
+        5|v5) MAJOR=5; VERSION=5.0.1;;
+        6|v6) MAJOR=6; VERSION=6.0.0;;
+        *) die '版本只能选择 v5 或 v6。';;
+    esac
+    case "$MAJOR/$ASSET_ARCH" in
+        5/amd64) OFFICIAL_SHA256=5b2e221f2c6e29b1db8e47053e1221be29d5627da807cb932b089f514a3609f0;;
+        5/aarch64) OFFICIAL_SHA256=c9e1cc1f1a86e7d2958f2bc41ff9dc668edf479455a651ea05c6db2c18cd2e4e;;
+        6/amd64) OFFICIAL_SHA256=27d8bead8dd7a33f2207b58c7bb6b4c274f67f537b621dcbee7112ffd22e23e6;;
+        6/aarch64) OFFICIAL_SHA256=316c924cb2f7bea75278303265cf004c66379244e101c64ab672a1c987bf8041;;
+        *) die '未配置该架构的官方文件校验值。';;
+    esac
+}
+installed_major() {
+    output=$(timeout 5 "$BASE/snell-server" --version 2>&1) || return 1
+    case "$output" in
+        *'snell-server v5.'*) printf '5\n';;
+        *'snell-server v6.'*) printf '6\n';;
+        *) return 1;;
     esac
 }
 BASE=/usr/local/lib/snell-v5
@@ -53,11 +73,24 @@ lock() {
 }
 deps() {
     if [ "$MANAGER" = openrc ]; then
-        apk add --no-cache curl ca-certificates unzip gcompat libstdc++ libgcc upx iproute2
+        missing=
+        for pkg in curl ca-certificates unzip gcompat libstdc++ libgcc iproute2; do
+            apk info -e "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+        done
+        if [ "$MAJOR" = 5 ]; then
+            apk info -e upx >/dev/null 2>&1 || missing="$missing upx"
+        fi
+        if [ -n "$missing" ]; then
+            # Package names above are fixed, not user input.
+            # shellcheck disable=SC2086
+            apk add --no-cache $missing
+        fi
     else
         command -v apt-get >/dev/null 2>&1 || die 'systemd 路径仅支持 Debian/Ubuntu。'
-        apt-get update
-        apt-get install -y curl ca-certificates unzip iproute2
+        if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! command -v ss >/dev/null 2>&1 || [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then
+            apt-get update
+            apt-get install -y curl ca-certificates unzip iproute2
+        fi
     fi
 }
 get() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$2" | head -n 1; }
@@ -68,6 +101,10 @@ valid_port() {
 valid_host() {
     case "$1" in ''|*[!a-zA-Z0-9.:_-]*) return 1;; esac
     [ "${#1}" -le 253 ]
+}
+valid_ipv4() {
+    case "$1" in ''|*[!0-9.]*|.*|*.) return 1;; esac
+    printf '%s\n' "$1" | awk -F. 'NF != 4 {exit 1} {for(i=1;i<=4;i++) if(length($i)>3 || $i=="" || $i>255) exit 1}'
 }
 port_busy() {
     sockets=$(ss -H -lnt "sport = :$1") || return 0
@@ -126,8 +163,8 @@ prepare_binary() {
     actual=$(sha256sum "$WORK/snell-server"); actual=${actual%% *}
     [ "$actual" = "$OFFICIAL_SHA256" ] || die '官方文件与固定 SHA-256 不符；停止安装，不自动信任新文件。'
     chmod 755 "$WORK/snell-server"
-    if [ "$MANAGER" = openrc ]; then
-        # Decompress the verified official UPX file, not a third-party rebuild.
+    if [ "$MANAGER" = openrc ] && [ "$MAJOR" = 5 ]; then
+        # Only the pinned v5 builds are UPX-packed; v6 must not be unpacked.
         upx -t "$WORK/snell-server" > "$WORK/upx.log" 2>&1 || die 'UPX 完整性检查失败。'
         upx -d "$WORK/snell-server" >> "$WORK/upx.log" 2>&1 || die 'UPX 解壳失败。'
     fi
@@ -135,7 +172,7 @@ prepare_binary() {
         cat "$WORK/version.log" >&2
         die '二进制试运行失败，未替换现有服务。'
     }
-    grep -Fq "snell-server v$VERSION " "$WORK/version.log" || die '运行版本与 v5.0.1 不符。'
+    grep -Fq "snell-server v$VERSION " "$WORK/version.log" || die "运行版本与 v$VERSION 不符。"
     say "已验证官方 Snell v$VERSION；运行测试通过。"
 }
 write_unit() {
@@ -195,41 +232,44 @@ install_cmd() {
     if [ -e "$BASE" ] || [ -e /etc/snell-v5 ] || unit_exists; then
         die '已存在本脚本的部署或残留；不会覆盖，请先 status 或检查路径。'
     fi
+    choice=${SNELL_VERSION:-${1:-}}
+    if [ -z "$choice" ]; then
+        printf '安装版本 5 / 6 [5]: '
+        read -r choice || choice=
+        choice=${choice:-5}
+    fi
+    select_release "$choice"
     port=${SNELL_PORT:-}
-    host=${SNELL_HOST:-}
-    public_port=${SNELL_PUBLIC_PORT:-}
     if [ -z "$port" ]; then
-        printf '内部监听端口（商家分配的内部端口）: '
+        printf '外网端口（监听同端口，映射由你设置）: '
         read -r port || die '缺少端口；无人值守请设置 SNELL_PORT。'
     fi
-    valid_port "$port" || die '监听端口应为 1024–65535，不使用前导零。'
-    if [ -z "$host" ]; then
-        printf '客户端使用的公网 IP 或域名（不带端口）: '
-        read -r host || die '缺少公网地址；无人值守请设置 SNELL_HOST。'
+    valid_port "$port" || die '端口应为 1024–65535，不使用前导零。'
+    if [ -n "${SNELL_PUBLIC_PORT:-}" ] && [ "$SNELL_PUBLIC_PORT" != "$port" ]; then
+        die '新版采用内外相同端口，请将商家映射设为相同端口。'
     fi
-    valid_host "$host" || die '公网地址只能包含域名/IP 字符，不要带空格、逗号或 IPv6 方括号。'
-    if [ -z "$public_port" ]; then
-        printf '客户端公网端口 [%s]（NAT 不一致时填写映射端口）: ' "$port"
-        read -r public_port || public_port=
-        public_port=${public_port:-$port}
-    fi
-    valid_port "$public_port" || die '公网端口应为 1024–65535。'
     deps
-    port_busy "$port" && die '该内部端口的 TCP 或 UDP 已占用；不会停止其他服务。'
+    host=${SNELL_HOST:-}
+    if [ -z "$host" ]; then
+        host=$(curl -4fsS --connect-timeout 3 --max-time 5 https://api.ipify.org 2>/dev/null) || host=
+        valid_ipv4 "$host" || host=
+    fi
+    if [ -z "$host" ]; then
+        printf '自动获取公网 IPv4 失败，请填写公网 IP/域名: '
+        read -r host || die '缺少公网地址；可设置 SNELL_HOST。'
+    fi
+    valid_host "$host" || die '公网地址格式不正确。'
+    port_busy "$port" && die '该端口的 TCP 或 UDP 已占用；不会停止其他服务。'
     prepare_binary
     umask 077
     mkdir -p "$BASE" /etc/snell-v5
     psk=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
     [ "${#psk}" = 48 ] || die '随机密钥生成失败。'
-    cat > "$CONF" <<CONFEOF
-[snell-server]
-listen = 0.0.0.0:$port
-psk = $psk
-ipv6 = false
-obfs = off
-tfo = false
-CONFEOF
-    printf 'host = %s\nport = %s\n' "$host" "$public_port" > "$META"
+    {
+        printf '[snell-server]\nlisten = 0.0.0.0:%s\npsk = %s\nipv6 = false\ntfo = false\n' "$port" "$psk"
+        if [ "$MAJOR" = 6 ]; then printf 'mode = default\n'; else printf 'obfs = off\n'; fi
+    } > "$CONF"
+    printf 'host = %s\nport = %s\n' "$host" "$port" > "$META"
     cp "$WORK/snell-server" "$BASE/snell-server"
     chmod 755 "$BASE/snell-server"
     write_unit
@@ -261,47 +301,117 @@ backup() {
     [ ! -f "$META" ] || cp -p "$META" "$BACKUP/client.conf"
     say "备份：$BACKUP（含密钥，勿公开）"
 }
-update_cmd() {
+# Preserve ordinary settings, remove incompatible version-specific fields.
+convert_config() {
+    if [ "$MAJOR" = 6 ] && [ "$(get obfs "$CONF")" != off ] && [ -n "$(get obfs "$CONF")" ]; then
+        die 'v6 不支持旧 obfs；请先关闭混淆并同步客户端。'
+    fi
+    awk -v major="$MAJOR" '
+        /^[[:space:]]*(mode|obfs|obfs-host|version|dns-ip-preference|ipv-preference)[[:space:]]*=/ {next}
+        {print}
+        END {if(major==6) print "mode = default"; else print "obfs = off"}
+    ' "$CONF" > "$WORK/server.conf"
+    chmod 600 "$WORK/server.conf"
+}
+restore_transaction() {
+    # Never overwrite a running replacement process if it cannot be stopped.
+    if ! action stop; then say "回滚停止失败，手动恢复备份：$BACKUP" >&2; return 1; fi
+    [ -z "$(owned_pids)" ] || return 1
+    cp -p "$BACKUP/snell-server" "$BASE/snell-server.new" &&
+        mv "$BASE/snell-server.new" "$BASE/snell-server" || return 1
+    cp -p "$BACKUP/server.conf" "$CONF.new" && mv "$CONF.new" "$CONF" || return 1
+    if [ "$running" = 1 ]; then
+        action start && wait_healthy || return 1
+    fi
+    say '已恢复原服务和配置。'
+}
+transaction_exit() {
+    code=$?
+    trap - EXIT
+    trap '' HUP INT TERM
+    if [ "$TRANSACTION" = 1 ]; then
+        if ! restore_transaction; then
+            say "自动回滚未完成，备份保留在 $BACKUP" >&2
+        fi
+        code=1
+    fi
+    cleanup
+    exit "$code"
+}
+change_release() {
     lock
     if [ ! -x "$BASE/snell-server" ] || [ ! -f "$CONF" ] || ! unit_exists; then
         die '没有完整部署，请先安装或检查残留。'
     fi
+    current=$(installed_major) || die '无法确定已安装版本，停止替换。'
+    if [ "$1" = update ]; then
+        select_release "$current"
+    else
+        select_release "$2"
+        if [ "$current" = "$MAJOR" ]; then say "已经是 v$MAJOR，请使用 update。"; return; fi
+        say "将切换 v$current → v$MAJOR，保留端口/PSK。客户端需同步 version 和 mode；v6 不再提供 QUIC Proxy。"
+        if [ "${SNELL_YES:-0}" != 1 ]; then
+            printf '输入 YES 确认切换: '
+            read -r answer || return 1
+            [ "$answer" = YES ] || die '已取消。'
+        fi
+    fi
     deps
     prepare_binary
+    if [ "$current" = "$MAJOR" ]; then cp -p "$CONF" "$WORK/server.conf";
+    else convert_config; fi
     backup
     running=0
-    [ -z "$(owned_pids)" ] || running=1
-    action stop || die '停止失败，未替换。'
+    if action status >/dev/null 2>&1 || [ -n "$(owned_pids)" ]; then running=1; fi
+    TRANSACTION=0
+    trap transaction_exit EXIT
+    # Activate rollback BEFORE stopping anything; all subsequent failures restore.
+    TRANSACTION=1
+    action stop || die '停止失败，启动回滚。'
+    [ -z "$(owned_pids)" ] || die '仍有服务进程，启动回滚。'
     cp "$WORK/snell-server" "$BASE/snell-server.new"
     chmod 755 "$BASE/snell-server.new"
     mv "$BASE/snell-server.new" "$BASE/snell-server"
+    cp -p "$WORK/server.conf" "$CONF.new"
+    mv "$CONF.new" "$CONF"
     if [ "$running" = 1 ]; then
-        if action start && wait_healthy; then
-            say '同版本重新安装成功（始终锁定 v5.0.1）。'
-        else
-            say '新二进制启动失败，恢复原文件。'
-            action stop || true
-            cp -p "$BACKUP/snell-server" "$BASE/snell-server.new"
-            mv "$BASE/snell-server.new" "$BASE/snell-server"
-            action start || true
-            wait_healthy || die "回滚后仍异常，请查看日志及 $BACKUP。"
-            die '新二进制未通过验收，已恢复原服务。'
-        fi
-    else
-        say '同版本文件已替换；保留原来的停止状态。'
+        action start
+        wait_healthy || die '新版本启动检查失败，启动回滚。'
     fi
+    TRANSACTION=0
+    say "已安装 v$VERSION，保留原启停状态。备份可用于恢复；公网代理请另测。"
+    install_self
+    if [ "$current" != "$MAJOR" ]; then export_cmd; fi
+}
+update_cmd() { change_release update; }
+switch_cmd() {
+    target=${1:-}
+    if [ -z "$target" ]; then
+        printf '切换目标 5 / 6: '
+        read -r target || die '缺少目标版本。'
+    fi
+    case "$target" in 5|v5|6|v6) ;; *) die '版本只能选择 v5 或 v6。';; esac
+    change_release switch "$target"
 }
 export_cmd() {
     root_only
     if [ ! -r "$CONF" ] || [ ! -r "$META" ]; then die '缺少配置。'; fi
     host=$(get host "$META"); public_port=$(get port "$META"); psk=$(get psk "$CONF")
     case "$host" in *:*) host="[$host]";; esac
+    major=$(installed_major) || die '无法确认二进制版本，不导出错误节点。'
     say '下行含密钥，请勿公开分享：'
-    printf 'My-Snell-v5 = snell, %s, %s, psk=%s, version=5, reuse=true, tfo=false\n' "$host" "$public_port" "$psk"
-    say '客户端混淆关闭。首次排错先使用普通 TCP；QUIC/UDP 另行验证。'
+    printf 'My-Snell-v%s = snell, %s, %s, psk=%s, version=%s, reuse=true, tfo=false' "$major" "$host" "$public_port" "$psk" "$major"
+    if [ "$major" = 6 ]; then
+        mode=$(get mode "$CONF"); mode=${mode:-default}
+        case "$mode" in default|unshaped|unsafe-raw) ;; *) die '无效的 v6 mode。';; esac
+        printf ', mode=%s' "$mode"
+    fi
+    printf '\n'
+    say '切换后重新导入节点；客户端须支持对应版本，v6 的 mode 须一致。'
 }
 status_cmd() {
     root_only
+    say "管理器版本：$SCRIPT_VERSION"
     if [ ! -f "$CONF" ]; then say '未安装。'; return 1; fi
     "$BASE/snell-server" --version 2>&1 || true
     say "内部监听：$(get listen "$CONF")"
@@ -356,17 +466,19 @@ uninstall_cmd() {
 }
 help_cmd() {
     cat <<'HELP'
-Snell v5 专用管理器（amd64 / arm64）
-用法：sh snell-v5.sh [install|start|stop|restart|status|logs|export|update|uninstall|help]
+Snell v5/v6 管理器（amd64 / arm64，旧入口 snell-v5 保持兼容）
+用法：sh snell-v5.sh [install [5|6]|switch [5|6]|start|stop|restart|status|logs|export|update|uninstall|help]
 无参数打开菜单；安装后可直接运行 snell-v5。
-install 支持 SNELL_PORT=内部端口 SNELL_HOST=公网地址 SNELL_PUBLIC_PORT=公网端口。
-update 只重新安装固定的官方 v5.0.1，不升级 v6，不自动更新管理脚本。
-不创建容器、不改防火墙/SSH/sysctl、不接管已有服务、不猜 NAT 映射。
+安装只填一个端口，监听和外网同端口，商家映射由你设置；公网地址自动获取。
+无人值守：SNELL_VERSION=5 SNELL_PORT=端口 [SNELL_HOST=公网地址]。
+update 保持当前大版本；switch 需确认（无人值守可设 SNELL_YES=1）。
+当前支持固定官方 v5.0.1/v6.0.0；不自动追逐上游版本，不创建容器、不改防火墙/SSH/sysctl。
 HELP
 }
 menu() {
     while :; do
-        say '\nSnell v5：1 安装  2 启动  3 停止  4 重启  5 状态  6 日志  7 导出  8 更新  9 卸载  0 退出'
+        printf '\nSnell v5/v6 管理器 %s\n' "$SCRIPT_VERSION"
+        say '1 安装  2 启动  3 停止  4 重启  5 状态  6 日志  7 导出  8 更新当前大版本  9 卸载  10 切换v5/v6  0 退出'
         printf '> '; read -r choice || return 0
         case "$choice" in
             1) sh "$0" install || say '操作未完成。';;
@@ -378,6 +490,7 @@ menu() {
             7) sh "$0" export || true;;
             8) sh "$0" update || say '操作未完成。';;
             9) sh "$0" uninstall || say '操作未完成。';;
+            10) sh "$0" switch || say '操作未完成。';;
             0) return 0;; *) say '无效选项。';;
         esac
     done
@@ -388,7 +501,8 @@ main() {
     root_only
     platform
     case "$cmd" in
-        install) install_cmd;; update) update_cmd;; export) export_cmd;;
+        install) install_cmd "${2:-}";; switch) switch_cmd "${2:-}";;
+        update) update_cmd;; export) export_cmd;;
         status) status_cmd;; logs) logs_cmd;; uninstall) uninstall_cmd;;
         start|stop|restart) control_cmd "$cmd";; menu) menu;;
         *) help_cmd; return 1;;

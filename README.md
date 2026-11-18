@@ -1,83 +1,92 @@
-# Snell v5 — 自用原生安装管理脚本
+# Snell v5/v6 原生管理器
 
-固定使用 **Surge 官方 Snell v5.0.1**，不安装 Docker，不升级 v6。
-主要面向 **Alpine/OpenRC 的 amd64 / arm64 LXC 小机**，内置经真机验证的 UPX 解壳兼容处理。
+官方 **v5.0.1 / v6.0.0**，支持 amd64 与 arm64；Alpine/OpenRC 无需容器。
+仓库名、文件名和命令 `snell-v5` 保持不变，兼容已安装的旧版。
 
-## 快速开始
+## 安装
 
-root 下先下载，再执行；**不要管道到 `sh`**，交互输入需要终端：
+root 执行，先下载再运行，**不要直接管道给 sh**：
 
 ```sh
-# Alpine 若缺少下载工具
+# Alpine 缺下载工具时
 apk add --no-cache curl ca-certificates
-
 curl -fL https://raw.githubusercontent.com/Lkwang88/snell-v5/main/snell-v5.sh -o snell-v5.sh
 sh snell-v5.sh
 ```
 
-菜单选择 `1 安装`，填写：
+选「1 安装」→ 选择 v5/v6 → **只填一次端口**。
+服务端监听和客户端导出使用同一端口，商家 NAT 映射由你设为同端口。公网 IPv4 自动探测，失败才要求手填；可用 `SNELL_HOST` 覆盖出口 IP（多出口/NAT 请自行确认探测是否正确）。
 
-1. **内部监听端口**：小机内绑定的端口，必须空闲。
-2. **公网 IP / 域名**：客户端实际使用的地址，不带端口；IPv6 不带方括号。
-3. **公网端口**：商家映射后的端口，默认与内部相同。**脚本不会猜测或创建 NAT 映射。**
-
-安装后：
+无人值守示例（示例地址）：
 
 ```sh
-snell-v5          # 菜单
-snell-v5 status
+SNELL_PORT=20005 SNELL_HOST=192.0.2.10 sh snell-v5.sh install 5
+# 或 install 6；SNELL_VERSION=5/6 也可指定安装版本
+```
+
+每次全新安装产生随机 PSK，配置仅 root 可读。IPv4 监听、TFO 关闭，v5 混淆关闭，v6 固定默认模式 `default`。
+
+## 已安装用户升级管理器
+
+不用重装内核、不用重启现有节点：
+
+```sh
+curl -fL https://raw.githubusercontent.com/Lkwang88/snell-v5/main/snell-v5.sh -o snell-v5.sh
+sh -n snell-v5.sh && install -m 755 snell-v5.sh /usr/local/bin/snell-v5
+snell-v5
+```
+
+以上仅更新管理程序，不更改端口、密钥、服务配置或二进制。首次更新可先自行备份旧管理脚本。
+
+## 常用操作
+
+```sh
+snell-v5                  # 菜单
+snell-v5 status           # 真实二进制版本/进程/端口归属，不显示密钥
 snell-v5 logs
-snell-v5 export   # 显示密钥，勿公开
+snell-v5 export           # 含 PSK，切勿公开
+snell-v5 update           # 保持当前大版本，安装本脚本支持的固定版本
+snell-v5 switch 6         # 确认后 v5 → v6
+snell-v5 switch 5         # 确认后 v6 → v5
+snell-v5 start
+snell-v5 stop
 snell-v5 restart
+snell-v5 uninstall        # 输入 YES，备份后卸载
 ```
 
-无人值守示例（文档示例地址，不是实际节点）：
+跨版本切换会短暂中断此节点，保留地址、端口、PSK 与原启停状态；转换版本专用字段。确认时输入 `YES`，无人值守可设 `SNELL_YES=1`。
 
-```sh
-SNELL_PORT=30005 SNELL_HOST=192.0.2.10 SNELL_PUBLIC_PORT=20005 sh snell-v5.sh install
-```
+**客户端必须支持目标版本并重新导入导出的节点。** v6 输出 `version=6, mode=default`，客户端 mode 必须一致；v6 已移除 v5 的 QUIC Proxy。只支持 v5 的客户端请勿切到 v6。带旧版 obfs 的配置会拒绝转到 v6，不静默破坏旧混淆。
 
-每次全新安装生成新的随机 PSK。客户端使用 `version=5`、混淆关闭，直接复制导出的条目。首次排错先用普通 TCP，QUIC/UDP 单独验证。
+`update` 不会自动跨大版本，也不会自动追逐官网新包：本版明确支持 v5.0.1 与 v6.0.0。版本升级由维护者核验官方文件、更新固定哈希与测试后发布管理脚本。
 
-## 取舍和安全边界
+## 可靠性与边界
 
-- 支持 **amd64/x86_64 和 arm64/aarch64**，自动选择官方下载包、分别校验固定 SHA-256；不支持 armv7/i386 等其他架构。
-- **Alpine 3.21/OpenRC 已真机安装和代理转发验证**；Debian/Ubuntu systemd 路径已实现，但尚未真机端到端验证。
-- 官方压缩包经 HTTPS 下载，解压后的原始二进制与脚本固定 SHA-256 比对，再在 Alpine 上执行 `upx -t` / `upx -d`。不是第三方重编译内核。
-- 固定哈希是维护者对官方 HTTPS 文件的实测记录，**不是 Surge 官方签名或官方公布的校验值**。上游文件若变化，脚本拒绝安装，不自动信任新哈希。
-- 仅创建独立 `snell-v5` 服务，不接管旧 Snell，不会自动停止占用端口的其他程序。
-- 不修改防火墙、SSH、sysctl，不安装容器、不替换全局 glibc、不添加计划任务。
-- 服务当前以 **root** 运行以保持极简部署；不将其宣传为完成安全加固的生产发行版。
-- 不自动升级，不自动更新脚本。`update` 只重新安装固定 v5.0.1，替换前备份，启动验证失败时恢复旧二进制。
-- 安装成功只代表**真实进程存在且拥有配置端口的 TCP 监听**，不代表公网可达或用户客户端兼容。公网代理请求必须另测。
-- 默认 IPv4 监听 `0.0.0.0`，TFO/混淆关闭，DNS 使用内核默认行为。公网 IPv6 入站尚未实现。
+- 原始 ELF 按 **版本＋架构** 分别核对固定 SHA-256。该值是维护者从官方 HTTPS 下载的实测值，**不是官方签名**；不匹配直接停止。
+- Alpine 的 v5 官方文件带 UPX 壳，经 `upx -t/-d` 处理后试运行；v6 官方文件未压缩，不错误地执行解壳。
+- 只安装缺少的运行依赖；无需容器、编译或全局 glibc 替换。不改 SSH、防火墙、sysctl，不加计划任务。
+- 切换/更新先暂存校验，再备份，最后停止服务替换二进制和配置；中途失败或 HUP/INT/TERM 会尝试整组回滚。SIGKILL/断电无法执行 trap，保留私有备份供人工恢复。停止失败不会强杀未知进程。
+- 安装、切换和重启检查真实进程与其 TCP socket，不凭守护器 `started` 宣称成功。**本机健康不等于公网代理可用。**
+- 服务当前 root 运行；定位为自用管理脚本，不宣称已完成生产安全加固。
+- 默认仅 IPv4 入站。自动探测请求 `api.ipify.org`；结果应与商家公网入口核对。
+- 修改配置后重启；公网地址位于 client.conf。新装只接受内外同端口，旧部署的不同端口 metadata 在更新/切换时原样保留，不擅自改动。
+- 保留旧 `snell-v5` 路径和服务名，即使运行 v6 也不改名。仅管理自身部署，不接管其他脚本的 Snell。
+- Alpine 日志在服务启动时超过 5 MiB 才保留一个轮转文件，不是持续大小上限。
 
-## 命令与文件
+## 路径与备份
 
-| 命令 | 作用 |
+| 内容 | 路径 |
 |---|---|
-| `install` | 新装；已有本脚本部署时拒绝覆盖 |
-| `start / stop / restart` | 管理本脚本服务 |
-| `status` | 检查版本、实际进程与端口归属；不显示 PSK |
-| `logs` | 最近 60 行日志 |
-| `export` | 导出 Surge 格式节点，**包含 PSK** |
-| `update` | 备份后重新安装固定版本，保留原启停状态 |
-| `uninstall` | 输入 `YES` 后备份卸载；保留管理命令、日志、依赖和备份 |
-
-| 文件 | 位置 |
-|---|---|
-| 服务端二进制 | `/usr/local/lib/snell-v5/snell-server` |
-| 服务端配置 | `/etc/snell-v5/server.conf` |
-| 公网地址/端口 | `/etc/snell-v5/client.conf` |
-| 管理命令 | `/usr/local/bin/snell-v5` |
+| 管理程序 | `/usr/local/bin/snell-v5` |
+| 二进制 | `/usr/local/lib/snell-v5/snell-server` |
+| 服务配置 | `/etc/snell-v5/server.conf` |
+| 公网地址/导出端口 | `/etc/snell-v5/client.conf` |
 | Alpine 服务 | `/etc/init.d/snell-v5` |
 | systemd 服务 | `/etc/systemd/system/snell-v5.service` |
 | Alpine 日志 | `/var/log/snell-v5.log` |
-| 备份 | `/var/backups/snell-v5/`（**含密钥，不要上传**） |
+| 更新/切换备份 | `/var/backups/snell-v5/` |
 
-需改监听端口或密钥时，以 root 编辑服务端配置后 `snell-v5 restart`；改公网入口时编辑 `client.conf`，然后重新 `export`。本版不提供自动迁移旧脚本或自动修改配置菜单。
-
-Alpine 日志仅在服务启动时超过 5 MiB 后保留一个轮转文件，不是持续大小限额。频繁出错时注意磁盘占用。
+备份含二进制及 server.conf/client.conf，**含 PSK，不要上传**。人工恢复需先停止服务，恢复匹配的二进制与 server.conf，再启动；必要时同时恢复 client.conf。卸载保留管理命令、日志、依赖和备份。
 
 ## 验证
 
@@ -87,17 +96,14 @@ python3 test_script.py
 shellcheck -s sh snell-v5.sh
 ```
 
-已完成：8 项离线回归（架构映射、输入校验、TCP/UDP 端口冲突、端口 PID 归属、哈希失败中止、更新失败回滚等）；两台 Alpine 3.21 amd64 和一台 arm64 LXC 全新部署、重启、开机自启注册；外部 Snell v5 客户端经 SOCKS 发起 HTTPS 请求返回 200，错误 PSK 负面对照失败。
+- 20 项离线回归：双版本双架构哈希、单端口安装、导出版本、配置往返、错误哈希、启动失败/信号回滚、取消及停止状态保留等；ShellCheck 通过。
+- 原 v5 已在 Alpine 3.21 amd64/arm64 LXC 真机安装和 HTTPS 代理测试通过。
+- 新版在一台 122 MiB 内存的 Alpine 3.21 amd64 LXC 上，以独立服务/端口测试 v5 → v6 → v5、v6 同版本 update、停止状态切换、受控验收失败自动回滚。v5/v6 均通过独立工作机强制 SOCKS HTTPS 200，错误 PSK 对照失败。正式节点配置和二进制校验保持不变。
+- 新版 v6 ARM64 仅核验官方文件/哈希和离线选择逻辑，尚未 ARM64 实机转发验证。Debian/Ubuntu systemd 路径未真机端到端验证，未验证 UDP/QUIC或整机重启。
+- 协议测试使用第三方逆向客户端 [opensnell-rust](https://github.com/missuo/opensnell-rust)，成功不代表所有官方/第三方客户端或用户线路必然可用。
 
-另在临时实例上测试启停、同版本更新和备份卸载。未重启 VPS 验证系统启动流程；未验证 UDP/QUIC、所有客户端软件与用户本地线路。临时测试客户端为 [winmin/snell-client](https://github.com/winmin/snell-client)，其为第三方逆向实现，测试成功不等于官方客户端认证。
+## 来源与许可
 
-## 协议与来源
+[官方发布说明](https://kb.nssurge.com/surge-knowledge-base/release-notes/snell) · [UPX](https://github.com/upx/upx)
 
-Snell 是 Surge 团队的协议；本仓库仅提供独立编写的安装管理脚本，不分发官方二进制、不代表官方。
-
-- [Snell 官方发布说明](https://kb.nssurge.com/surge-knowledge-base/release-notes/snell)
-- [官方 v5.0.1 amd64 下载](https://dl.nssurge.com/snell/snell-server-v5.0.1-linux-amd64.zip)
-- [官方 v5.0.1 arm64 下载](https://dl.nssurge.com/snell/snell-server-v5.0.1-linux-aarch64.zip)
-- [UPX](https://github.com/upx/upx)
-
-MIT 许可证仅适用于本仓库代码；Snell 和 UPX 分别遵守其自身许可。
+Snell 属于 Surge 团队；本仓库仅提供独立编写的安装管理脚本，不分发官方二进制，不代表官方。MIT 仅适用于本仓库代码，Snell/UPX 遵循各自许可。
