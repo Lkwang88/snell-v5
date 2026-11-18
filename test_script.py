@@ -184,7 +184,12 @@ lock() { :; }; unit_exists() { return 1; }; deps() { :; }
 port_busy() { return 1; }; curl() { printf 203.0.113.7; }
 prepare_binary() { WORK=$(mktemp -d); printf fake > "$WORK/snell-server"; }
 write_unit() { :; }; action() { :; }; wait_healthy() { :; }
-rc-update() { :; }; install_self() { :; }; export_cmd() { :; }
+testbin=$(dirname "$BASE")/test-bin
+mkdir -p "$testbin"
+printf '#!/bin/sh\nexit 0\n' > "$testbin/rc-update"
+chmod 755 "$testbin/rc-update"
+PATH="$testbin:$PATH"
+install_self() { :; }; export_cmd() { :; }
 install_cmd
 '''
                 r=subprocess.run(['sh','-c',lib+'\n'+body],input=f'{major}\n20005\n',capture_output=True,text=True)
@@ -217,5 +222,76 @@ install_cmd
                 self.assertEqual(r.returncode,0,r.stderr)
                 self.assertIn(f'version={major}',r.stdout)
                 self.assertEqual('mode=default' in r.stdout,major==6)
+
+class LockLifecycleTests(unittest.TestCase):
+    def harness(self, d):
+        p=pathlib.Path(d)/'manager.sh'
+        body='''
+LOCK="ROOT/lock"
+root_only() { :; }
+if [ "${1:-}" = __locked ]; then
+ shift
+ case "$1" in
+   fail) exit 2;;
+   killed) kill -KILL $$;;
+   hold) echo READY; read -r release;;
+   daemon) (sleep 1) >/dev/null 2>&1 &;;
+   replace) cp "$0" "$0.new"; mv "$0.new" "$0";;
+ esac
+ exit 0
+fi
+with_lock "$@"
+'''.replace('ROOT',d)
+        p.write_text(LIB+'\n'+body)
+        return p
+
+    def call(self,p,cmd):
+        return subprocess.run(['sh',str(p),cmd],capture_output=True,text=True,timeout=5)
+
+    def test_repeated_success_failure_release(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=self.harness(d)
+            for cmd in ('ok','fail','ok','killed','ok'):
+                r=self.call(p,cmd)
+                self.assertEqual(r.returncode==0,cmd=='ok',r.stderr)
+
+    def test_legacy_empty_directory_is_not_stale_kernel_lock(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=self.harness(d); (pathlib.Path(d)/'lock').mkdir()
+            self.assertEqual(self.call(p,'ok').returncode,0)
+            self.assertTrue((pathlib.Path(d)/'lock').is_dir())
+
+    def test_active_operation_is_blocked(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=self.harness(d)
+            proc=subprocess.Popen(['sh',str(p),'hold'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            try:
+                self.assertEqual(proc.stdout.readline().strip(),'READY')
+                r=self.call(p,'ok'); self.assertNotEqual(r.returncode,0)
+                self.assertIn('确实正在运行',r.stderr)
+            finally: proc.communicate('release\n',timeout=5)
+            self.assertEqual(self.call(p,'ok').returncode,0)
+
+    def test_daemon_does_not_inherit_lock(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=self.harness(d)
+            self.assertEqual(self.call(p,'daemon').returncode,0)
+            self.assertEqual(self.call(p,'ok').returncode,0)
+
+    def test_self_replacement_releases_lock(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=self.harness(d)
+            self.assertEqual(self.call(p,'replace').returncode,0)
+            self.assertEqual(self.call(p,'ok').returncode,0)
+
+    def test_actual_menu_repeated_switch(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=pathlib.Path(d)/'menu.sh'
+            p.write_text(LIB+'''\nroot_only() { :; }; platform() { :; }
+switch_cmd() { lock; echo SWITCH_REACHED; }
+'''+f'LOCK={d}/lock\n'+ 'main "$@"\n')
+            r=subprocess.run(['sh',str(p)],input='10\n10\n0\n',capture_output=True,text=True,timeout=5)
+            self.assertEqual(r.returncode,0,r.stderr)
+            self.assertEqual(r.stdout.count('SWITCH_REACHED'),2)
 
 if __name__=='__main__': unittest.main(verbosity=2)

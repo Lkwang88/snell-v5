@@ -1,7 +1,7 @@
 #!/bin/sh
 # Snell v5/v6 manager. Official server binaries; no containers. MIT.
 set -eu
-SCRIPT_VERSION=2.0.0
+SCRIPT_VERSION=2.0.1
 VERSION=
 MAJOR=
 ASSET_ARCH=
@@ -43,7 +43,7 @@ LOG=/var/log/snell-v5.log
 BACKUPS=/var/backups/snell-v5
 LOCK=/run/snell-v5.lock
 WORK=
-LOCKED=0
+# Mutating commands run under flock --close; daemons never inherit the lock.
 MANAGER=
 
 say() { printf '%s\n' "$*"; }
@@ -51,7 +51,6 @@ die() { say "错误：$*" >&2; exit 1; }
 root_only() { [ "$(id -u)" = 0 ] || die '请用 root 执行。'; }
 cleanup() {
     [ -z "$WORK" ] || rm -rf "$WORK"
-    [ "$LOCKED" = 0 ] || rmdir "$LOCK" 2>/dev/null || true
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -68,8 +67,22 @@ platform() {
 }
 lock() {
     root_only
-    mkdir "$LOCK" 2>/dev/null || die "另一个操作进行中；确认没有操作后可手动清理 $LOCK。"
-    LOCKED=1
+    [ "${LOCK_CONTEXT:-0}" = 1 ] || die '内部错误：写操作未受内核锁保护。'
+}
+with_lock() {
+    if ! command -v flock >/dev/null 2>&1 || ! flock --help 2>&1 | grep -q -- '--close'; then
+        die '需要 util-linux flock（支持 --close）；Alpine: apk add flock；Debian/Ubuntu: apt-get install util-linux。'
+    fi
+    # Linux flock accepts the legacy directory as well as a regular file.
+    # Never unlink a lock inode: two processes could otherwise lock different files.
+    # The supervisor holds the lock, but --close keeps it out of daemon children.
+    if flock -n -E 75 -o "$LOCK" sh "$0" __locked "$@"; then
+        return 0
+    else
+        result=$?
+        if [ "$result" = 75 ]; then die '另一个管理操作确实正在运行，请稍后重试；不要删除锁。'; fi
+        return "$result"
+    fi
 }
 deps() {
     if [ "$MANAGER" = openrc ]; then
@@ -500,6 +513,16 @@ main() {
     case "$cmd" in help|-h|--help) help_cmd; return;; esac
     root_only
     platform
+    LOCK_CONTEXT=0
+    if [ "$cmd" = __locked ]; then
+        shift
+        cmd=${1:-}
+        LOCK_CONTEXT=1
+    else
+        case "$cmd" in
+            install|switch|update|uninstall|start|stop|restart) with_lock "$@"; return $?;;
+        esac
+    fi
     case "$cmd" in
         install) install_cmd "${2:-}";; switch) switch_cmd "${2:-}";;
         update) update_cmd;; export) export_cmd;;

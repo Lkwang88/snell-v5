@@ -9,7 +9,7 @@ root 执行，先下载再运行，**不要直接管道给 sh**：
 
 ```sh
 # Alpine 缺下载工具时
-apk add --no-cache curl ca-certificates
+apk add --no-cache curl ca-certificates flock
 curl -fL https://raw.githubusercontent.com/Lkwang88/snell-v5/main/snell-v5.sh -o snell-v5.sh
 sh snell-v5.sh
 ```
@@ -62,6 +62,8 @@ snell-v5 uninstall        # 输入 YES，备份后卸载
 
 ## 可靠性与边界
 
+- **2.0.1 修复历史空目录残锁**：写操作使用 util-linux `flock --close` 内核锁，监督进程持锁、服务子进程不继承。操作退出自动释放；历史 `/run/snell-v5.lock` 空目录可直接作为锁对象，无需删除。锁文件/目录存在不代表有人操作，勿删除锁 inode。若确有并发操作，后来的操作会被拒绝。
+- 锁工具需在写操作前具备：Alpine `apk add flock`；Debian/Ubuntu `apt-get install util-linux`。缺少时明确停止，不在无锁状态安装依赖。
 - 原始 ELF 按 **版本＋架构** 分别核对固定 SHA-256。该值是维护者从官方 HTTPS 下载的实测值，**不是官方签名**；不匹配直接停止。
 - Alpine 的 v5 官方文件带 UPX 壳，经 `upx -t/-d` 处理后试运行；v6 官方文件未压缩，不错误地执行解壳。
 - 只安装缺少的运行依赖；无需容器、编译或全局 glibc 替换。不改 SSH、防火墙、sysctl，不加计划任务。
@@ -96,7 +98,7 @@ python3 test_script.py
 shellcheck -s sh snell-v5.sh
 ```
 
-- 20 项离线回归：双版本双架构哈希、单端口安装、导出版本、配置往返、错误哈希、启动失败/信号回滚、取消及停止状态保留等；ShellCheck 通过。
+- 26 项离线回归（需真实 Linux 和 util-linux flock）：新增真实互斥并发、异常退出、旧空目录、守护进程不继承、自替换和菜单重复调用；原双版本双架构哈希、单端口安装、导出版本、配置往返、错误哈希、启动失败/信号回滚、取消及停止状态保留均通过；ShellCheck 通过。
 - 原 v5 已在 Alpine 3.21 amd64/arm64 LXC 真机安装和 HTTPS 代理测试通过。
 - 新版在一台 122 MiB 内存的 Alpine 3.21 amd64 LXC 上，以独立服务/端口测试 v5 → v6 → v5、v6 同版本 update、停止状态切换、受控验收失败自动回滚。v5/v6 均通过独立工作机强制 SOCKS HTTPS 200，错误 PSK 对照失败。正式节点配置和二进制校验保持不变。
 - 新版 v6 ARM64 仅核验官方文件/哈希和离线选择逻辑，尚未 ARM64 实机转发验证。Debian/Ubuntu systemd 路径未真机端到端验证，未验证 UDP/QUIC或整机重启。
